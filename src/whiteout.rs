@@ -1,0 +1,305 @@
+use crate::AtomicF32;
+use clack_extensions::{
+	audio_ports::{
+		AudioPortFlags, AudioPortInfo, AudioPortInfoWriter, AudioPortType, PluginAudioPorts,
+		PluginAudioPortsImpl,
+	},
+	params::{
+		HostParams, ParamDisplayWriter, ParamInfo, ParamInfoFlags, ParamInfoWriter,
+		ParamRescanFlags, PluginAudioProcessorParams, PluginMainThreadParams, PluginParams,
+	},
+	state::{PluginState, PluginStateImpl},
+};
+use clack_plugin::{
+	events::spaces::CoreEventSpace,
+	prelude::*,
+	stream::{InputStream, OutputStream},
+	utils::Cookie,
+};
+use fastrand::Rng;
+use std::{
+	ffi::CStr,
+	fmt::Write as _,
+	io::{Read, Write as _},
+};
+
+pub struct Whiteout;
+
+impl Whiteout {
+	pub const ID: &'static str = "com.edwloef.whiteout";
+}
+
+impl Plugin for Whiteout {
+	type AudioProcessor<'a> = AudioProcessor<'a>;
+	type Shared<'a> = Shared;
+	type MainThread<'a> = MainThread<'a>;
+
+	fn declare_extensions(
+		builder: &mut PluginExtensions<Self>,
+		_shared: Option<&Self::Shared<'_>>,
+	) {
+		builder
+			.register::<PluginAudioPorts>()
+			.register::<PluginParams>()
+			.register::<PluginState>();
+	}
+}
+
+impl DefaultPluginFactory for Whiteout {
+	fn get_descriptor() -> PluginDescriptor {
+		PluginDescriptor::new(Self::ID, "Whiteout")
+	}
+
+	fn new_shared(_host: HostSharedHandle<'_>) -> Result<Self::Shared<'_>, PluginError> {
+		Ok(Shared {
+			loss: AtomicF32::new(1.0),
+			intensity: AtomicF32::new(1.0),
+		})
+	}
+
+	fn new_main_thread<'a>(
+		host: HostMainThreadHandle<'a>,
+		shared: &'a Self::Shared<'a>,
+	) -> Result<Self::MainThread<'a>, PluginError> {
+		Ok(MainThread { host, shared })
+	}
+}
+
+pub struct AudioProcessor<'a> {
+	rng: Rng,
+	shared: &'a Shared,
+}
+
+impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for AudioProcessor<'a> {
+	fn activate(
+		_host: HostAudioProcessorHandle<'_>,
+		_main_thread: &mut MainThread,
+		shared: &'a Shared,
+		_audio_config: PluginAudioConfiguration,
+	) -> Result<Self, PluginError> {
+		Ok(Self {
+			shared,
+			rng: Rng::with_seed(0),
+		})
+	}
+
+	fn process(
+		&mut self,
+		_process: Process,
+		mut audio: Audio,
+		events: Events,
+	) -> Result<ProcessStatus, PluginError> {
+		let mut channels = audio
+			.port_pair(0)
+			.ok_or(PluginError::Message("No audio ports found"))?
+			.channels()?
+			.into_f32()
+			.ok_or(PluginError::Message("No f32 channels provided"))?;
+
+		for batch in events.input.batch() {
+			self.shared.flush(batch.events());
+
+			let loss = self.shared.loss.load();
+			let intensity = self.shared.intensity.load();
+
+			for channel in channels.iter_mut() {
+				match channel {
+					ChannelPair::InputOnly(_) => {
+						return Err(PluginError::Message("No output channel provided"));
+					}
+					ChannelPair::OutputOnly(_) => {
+						return Err(PluginError::Message("No input channel provided"));
+					}
+					ChannelPair::InPlace(in_place) => {
+						for in_place in &mut in_place[batch.sample_bounds()] {
+							let noise = self.rng.f32_inclusive();
+							if self.rng.f32_inclusive() <= loss {
+								*in_place *= 1.0 - noise * intensity;
+							}
+						}
+					}
+					ChannelPair::InputOutput(input, output) => {
+						for (input, output) in input[batch.sample_bounds()]
+							.iter()
+							.zip(&mut output[batch.sample_bounds()])
+						{
+							let noise = self.rng.f32_inclusive();
+							if self.rng.f32_inclusive() <= loss {
+								*output = *input * (1.0 - noise * intensity);
+							} else {
+								*output = *input;
+							}
+						}
+					}
+				}
+			}
+		}
+
+		Ok(ProcessStatus::ContinueIfNotQuiet)
+	}
+
+	fn reset(&mut self) {
+		self.rng = Rng::with_seed(0)
+	}
+}
+
+const PARAM_LOSS: ClapId = ClapId::new(0);
+const PARAM_INTENSITY: ClapId = ClapId::new(1);
+
+impl PluginAudioProcessorParams for AudioProcessor<'_> {
+	fn flush(
+		&mut self,
+		input_parameter_changes: &InputEvents,
+		_output_parameter_changes: &mut OutputEvents,
+	) {
+		self.shared.flush(input_parameter_changes);
+	}
+}
+
+pub struct Shared {
+	loss: AtomicF32,
+	intensity: AtomicF32,
+}
+
+impl Shared {
+	fn flush<'a>(&self, input_parameter_changes: impl IntoIterator<Item = &'a UnknownEvent>) {
+		for event in input_parameter_changes {
+			if let Some(CoreEventSpace::ParamValue(event)) = event.as_core_event()
+				&& let Some(param_id) = event.param_id()
+			{
+				match param_id {
+					PARAM_LOSS => self.loss.store((event.value() as f32).powi(3)),
+					PARAM_INTENSITY => self.intensity.store(event.value() as f32),
+					_ => {}
+				}
+			}
+		}
+	}
+}
+
+impl PluginShared<'_> for Shared {}
+
+pub struct MainThread<'a> {
+	host: HostMainThreadHandle<'a>,
+	shared: &'a Shared,
+}
+
+impl<'a> PluginMainThread<'a, Shared> for MainThread<'a> {}
+
+impl PluginAudioPortsImpl for MainThread<'_> {
+	fn count(&mut self, _is_input: bool) -> u32 {
+		1
+	}
+
+	fn get(&mut self, index: u32, _is_input: bool, writer: &mut AudioPortInfoWriter) {
+		if index == 0 {
+			writer.set(&AudioPortInfo {
+				id: ClapId::new(0),
+				name: b"main",
+				channel_count: 2,
+				flags: AudioPortFlags::IS_MAIN,
+				port_type: Some(AudioPortType::STEREO),
+				in_place_pair: Some(ClapId::new(0)),
+			});
+		}
+	}
+}
+
+impl PluginMainThreadParams for MainThread<'_> {
+	fn count(&mut self) -> u32 {
+		2
+	}
+
+	fn get_info(&mut self, param_index: u32, info: &mut ParamInfoWriter) {
+		match param_index {
+			0 => info.set(&ParamInfo {
+				id: PARAM_LOSS,
+				flags: ParamInfoFlags::IS_AUTOMATABLE | ParamInfoFlags::IS_MODULATABLE,
+				cookie: Cookie::empty(),
+				name: b"loss",
+				module: b"",
+				min_value: 0.0,
+				max_value: 1.0,
+				default_value: 1.0,
+			}),
+			1 => info.set(&ParamInfo {
+				id: PARAM_INTENSITY,
+				flags: ParamInfoFlags::IS_AUTOMATABLE | ParamInfoFlags::IS_MODULATABLE,
+				cookie: Cookie::empty(),
+				name: b"intensity",
+				module: b"",
+				min_value: 0.0,
+				max_value: 1.0,
+				default_value: 1.0,
+			}),
+			_ => {}
+		}
+	}
+
+	fn get_value(&mut self, param_id: ClapId) -> Option<f64> {
+		match param_id {
+			PARAM_LOSS => Some(self.shared.loss.load().cbrt().into()),
+			PARAM_INTENSITY => Some(self.shared.intensity.load().into()),
+			_ => None,
+		}
+	}
+
+	fn value_to_text(
+		&mut self,
+		param_id: ClapId,
+		value: f64,
+		writer: &mut ParamDisplayWriter,
+	) -> std::fmt::Result {
+		match param_id {
+			PARAM_LOSS | PARAM_INTENSITY => write!(writer, "{}%", (value * 100.0).round() as i8),
+			_ => Err(std::fmt::Error),
+		}
+	}
+
+	fn flush(
+		&mut self,
+		input_parameter_changes: &InputEvents,
+		_output_parameter_changes: &mut OutputEvents,
+	) {
+		self.shared.flush(input_parameter_changes);
+	}
+
+	fn text_to_value(&mut self, param_id: ClapId, text: &CStr) -> Option<f64> {
+		let text = text.to_str().ok()?;
+
+		match param_id {
+			PARAM_LOSS | PARAM_INTENSITY => Some(
+				text.trim()
+					.strip_suffix("%")
+					.unwrap_or(text)
+					.trim()
+					.parse::<f64>()
+					.ok()? / 100.0,
+			),
+			_ => None,
+		}
+	}
+}
+
+impl PluginStateImpl for MainThread<'_> {
+	fn load(&mut self, input: &mut InputStream) -> Result<(), PluginError> {
+		let mut buf = [0; 4];
+		input.read_exact(&mut buf)?;
+		self.shared.loss.store(f32::from_ne_bytes(buf));
+		input.read_exact(&mut buf)?;
+		self.shared.intensity.store(f32::from_ne_bytes(buf));
+
+		if let Some(params) = self.host.get_extension::<HostParams>() {
+			params.rescan(&mut self.host, ParamRescanFlags::VALUES);
+		}
+
+		Ok(())
+	}
+
+	fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
+		output.write_all(&self.shared.loss.load().to_ne_bytes())?;
+		output.write_all(&self.shared.intensity.load().to_ne_bytes())?;
+
+		Ok(())
+	}
+}
