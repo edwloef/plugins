@@ -12,6 +12,7 @@ use clack_extensions::{
 };
 use clack_plugin::{
 	events::spaces::CoreEventSpace,
+	plugin::features::{AUDIO_EFFECT, GLITCH, STEREO},
 	prelude::*,
 	stream::{InputStream, OutputStream},
 	utils::Cookie,
@@ -48,6 +49,9 @@ impl Plugin for Whiteout {
 impl DefaultPluginFactory for Whiteout {
 	fn get_descriptor() -> PluginDescriptor {
 		PluginDescriptor::new(Self::ID, "Whiteout")
+			.with_version(env!("CARGO_PKG_VERSION"))
+			.with_vendor("edwloef")
+			.with_features([AUDIO_EFFECT, GLITCH, STEREO])
 	}
 
 	fn new_shared(_host: HostSharedHandle<'_>) -> Result<Self::Shared<'_>, PluginError> {
