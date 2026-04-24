@@ -109,9 +109,9 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for AudioProcessor<'a>
 					}
 					ChannelPair::InPlace(in_place) => {
 						for in_place in &mut in_place[batch.sample_bounds()] {
-							*in_place = (intensity * *in_place)
+							*in_place *= intensity
 								/ f32::sqrt(intensity.powi(2) * (in_place.powi(2) - 1.0) + 1.0)
-								+ (1.0 - intensity) * *in_place;
+								+ (1.0 - intensity);
 						}
 					}
 					ChannelPair::InputOutput(input, output) => {
@@ -119,9 +119,10 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for AudioProcessor<'a>
 							.iter()
 							.zip(&mut output[batch.sample_bounds()])
 						{
-							*output = (intensity * *input)
-								/ f32::sqrt(intensity.powi(2) * (input.powi(2) - 1.0) + 1.0)
-								+ (1.0 - intensity) * *input;
+							*output = *input
+								* (intensity
+									/ f32::sqrt(intensity.powi(2) * (input.powi(2) - 1.0) + 1.0)
+									+ (1.0 - intensity));
 						}
 					}
 				}
