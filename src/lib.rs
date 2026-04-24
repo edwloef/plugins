@@ -1,8 +1,11 @@
+#![expect(clippy::single_match)]
+
 use std::sync::atomic::{AtomicU32, Ordering};
 
-mod whiteout;
 mod dcc;
 mod entry;
+mod heater;
+mod whiteout;
 
 struct AtomicF32(AtomicU32);
 

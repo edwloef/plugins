@@ -1,4 +1,4 @@
-use crate::{dcc::Dcc, whiteout::Whiteout};
+use crate::{dcc::Dcc, heater::Heater, whiteout::Whiteout};
 use clack_plugin::{entry::prelude::*, prelude::*};
 use std::ffi::CStr;
 
@@ -11,6 +11,7 @@ impl Entry for Plugins {
 		Ok(Plugins(PluginFactoryWrapper::new(PluginFactory {
 			dcc: Dcc::get_descriptor(),
 			whiteout: Whiteout::get_descriptor(),
+			heater: Heater::get_descriptor(),
 		})))
 	}
 
@@ -22,17 +23,19 @@ impl Entry for Plugins {
 struct PluginFactory {
 	dcc: PluginDescriptor,
 	whiteout: PluginDescriptor,
+	heater: PluginDescriptor,
 }
 
 impl PluginFactoryImpl for PluginFactory {
 	fn plugin_count(&self) -> u32 {
-		2
+		3
 	}
 
 	fn plugin_descriptor(&self, index: u32) -> Option<&PluginDescriptor> {
 		match index {
 			0 => Some(&self.dcc),
 			1 => Some(&self.whiteout),
+			2 => Some(&self.heater),
 			_ => None,
 		}
 	}
@@ -54,6 +57,12 @@ impl PluginFactoryImpl for PluginFactory {
 				&self.whiteout,
 				Whiteout::new_shared,
 				Whiteout::new_main_thread,
+			)),
+			Heater::ID => Some(PluginInstance::new::<Heater>(
+				host_info,
+				&self.heater,
+				Heater::new_shared,
+				Heater::new_main_thread,
 			)),
 			_ => None,
 		}
