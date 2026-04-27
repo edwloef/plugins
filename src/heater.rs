@@ -1,4 +1,4 @@
-use crate::AtomicF32;
+use crate::{AtomicF32, amp_to_db, db_to_amp};
 use clack_extensions::{
 	audio_ports::{
 		AudioPortFlags, AudioPortInfo, AudioPortInfoWriter, AudioPortType, PluginAudioPorts,
@@ -55,7 +55,9 @@ impl DefaultPluginFactory for Heater {
 
 	fn new_shared(_host: HostSharedHandle<'_>) -> Result<Self::Shared<'_>, PluginError> {
 		Ok(Shared {
+			pregain: AtomicF32::new(1.0),
 			intensity: AtomicF32::new(0.0),
+			postgain: AtomicF32::new(1.0),
 		})
 	}
 
@@ -97,7 +99,9 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for AudioProcessor<'a>
 		for batch in events.input.batch() {
 			self.shared.flush(batch.events());
 
+			let pregain = self.shared.pregain.load();
 			let intensity = self.shared.intensity.load();
+			let postgain = self.shared.postgain.load();
 
 			for channel in channels.iter_mut() {
 				match channel {
@@ -109,9 +113,12 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for AudioProcessor<'a>
 					}
 					ChannelPair::InPlace(in_place) => {
 						for in_place in &mut in_place[batch.sample_bounds()] {
-							*in_place *= intensity
-								/ f32::sqrt(intensity.powi(2) * (in_place.powi(2) - 1.0) + 1.0)
-								+ (1.0 - intensity);
+							*in_place = (*in_place * pregain)
+								* (intensity
+									/ f32::sqrt(
+										intensity.powi(2) * ((*in_place * pregain).powi(2) - 1.0)
+											+ 1.0,
+									) + (1.0 - intensity)) * postgain;
 						}
 					}
 					ChannelPair::InputOutput(input, output) => {
@@ -119,10 +126,12 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for AudioProcessor<'a>
 							.iter()
 							.zip(&mut output[batch.sample_bounds()])
 						{
-							*output = *input
+							*output = (*input * pregain)
 								* (intensity
-									/ f32::sqrt(intensity.powi(2) * (input.powi(2) - 1.0) + 1.0)
-									+ (1.0 - intensity));
+									/ f32::sqrt(
+										intensity.powi(2) * ((*input * pregain).powi(2) - 1.0)
+											+ 1.0,
+									) + (1.0 - intensity)) * postgain;
 						}
 					}
 				}
@@ -133,7 +142,9 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for AudioProcessor<'a>
 	}
 }
 
-const PARAM_INTENSITY: ClapId = ClapId::new(0);
+const PARAM_PREGAIN: ClapId = ClapId::new(0);
+const PARAM_INTENSITY: ClapId = ClapId::new(1);
+const PARAM_POSTGAIN: ClapId = ClapId::new(2);
 
 impl PluginAudioProcessorParams for AudioProcessor<'_> {
 	fn flush(
@@ -146,7 +157,9 @@ impl PluginAudioProcessorParams for AudioProcessor<'_> {
 }
 
 pub struct Shared {
+	pregain: AtomicF32,
 	intensity: AtomicF32,
+	postgain: AtomicF32,
 }
 
 impl Shared {
@@ -156,7 +169,9 @@ impl Shared {
 				&& let Some(param_id) = event.param_id()
 			{
 				match param_id {
+					PARAM_PREGAIN => self.pregain.store(db_to_amp(event.value() as f32)),
 					PARAM_INTENSITY => self.intensity.store((event.value() as f32).cbrt()),
+					PARAM_POSTGAIN => self.postgain.store(db_to_amp(event.value() as f32)),
 					_ => {}
 				}
 			}
@@ -194,12 +209,22 @@ impl PluginAudioPortsImpl for MainThread<'_> {
 
 impl PluginMainThreadParams for MainThread<'_> {
 	fn count(&mut self) -> u32 {
-		1
+		3
 	}
 
 	fn get_info(&mut self, param_index: u32, info: &mut ParamInfoWriter) {
 		match param_index {
 			0 => info.set(&ParamInfo {
+				id: PARAM_PREGAIN,
+				flags: ParamInfoFlags::IS_AUTOMATABLE | ParamInfoFlags::IS_MODULATABLE,
+				cookie: Cookie::empty(),
+				name: b"pregain",
+				module: b"",
+				min_value: -12.0,
+				max_value: 12.0,
+				default_value: 0.0,
+			}),
+			1 => info.set(&ParamInfo {
 				id: PARAM_INTENSITY,
 				flags: ParamInfoFlags::IS_AUTOMATABLE | ParamInfoFlags::IS_MODULATABLE,
 				cookie: Cookie::empty(),
@@ -209,13 +234,25 @@ impl PluginMainThreadParams for MainThread<'_> {
 				max_value: 0.995,
 				default_value: 0.0,
 			}),
+			2 => info.set(&ParamInfo {
+				id: PARAM_POSTGAIN,
+				flags: ParamInfoFlags::IS_AUTOMATABLE | ParamInfoFlags::IS_MODULATABLE,
+				cookie: Cookie::empty(),
+				name: b"postgain",
+				module: b"",
+				min_value: -12.0,
+				max_value: 12.0,
+				default_value: 0.0,
+			}),
 			_ => {}
 		}
 	}
 
 	fn get_value(&mut self, param_id: ClapId) -> Option<f64> {
 		match param_id {
+			PARAM_PREGAIN => Some(f64::from(amp_to_db(self.shared.pregain.load()))),
 			PARAM_INTENSITY => Some(self.shared.intensity.load().powi(3).into()),
+			PARAM_POSTGAIN => Some(f64::from(amp_to_db(self.shared.postgain.load()))),
 			_ => None,
 		}
 	}
@@ -227,6 +264,7 @@ impl PluginMainThreadParams for MainThread<'_> {
 		writer: &mut ParamDisplayWriter,
 	) -> std::fmt::Result {
 		match param_id {
+			PARAM_PREGAIN | PARAM_POSTGAIN => write!(writer, "{value:.1}dB"),
 			PARAM_INTENSITY => write!(writer, "{}%", (value * 100.0).round() as i8),
 			_ => Err(std::fmt::Error),
 		}
@@ -244,6 +282,14 @@ impl PluginMainThreadParams for MainThread<'_> {
 		let text = text.to_str().ok()?;
 
 		match param_id {
+			PARAM_PREGAIN | PARAM_POSTGAIN => text
+				.trim()
+				.split_at_checked(text.len() - 2)
+				.filter(|(_, suffix)| suffix.eq_ignore_ascii_case("dB"))
+				.map_or(text, |(prefix, _)| prefix)
+				.trim()
+				.parse::<f64>()
+				.ok(),
 			PARAM_INTENSITY => Some(
 				text.trim()
 					.strip_suffix("%")
@@ -261,7 +307,11 @@ impl PluginStateImpl for MainThread<'_> {
 	fn load(&mut self, input: &mut InputStream) -> Result<(), PluginError> {
 		let mut buf = [0; 4];
 		input.read_exact(&mut buf)?;
+		self.shared.pregain.store(f32::from_ne_bytes(buf));
+		input.read_exact(&mut buf)?;
 		self.shared.intensity.store(f32::from_ne_bytes(buf));
+		input.read_exact(&mut buf)?;
+		self.shared.postgain.store(f32::from_ne_bytes(buf));
 
 		if let Some(params) = self.host.get_extension::<HostParams>() {
 			params.rescan(&mut self.host, ParamRescanFlags::VALUES);
@@ -271,7 +321,9 @@ impl PluginStateImpl for MainThread<'_> {
 	}
 
 	fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
+		output.write_all(&self.shared.pregain.load().to_ne_bytes())?;
 		output.write_all(&self.shared.intensity.load().to_ne_bytes())?;
+		output.write_all(&self.shared.postgain.load().to_ne_bytes())?;
 
 		Ok(())
 	}

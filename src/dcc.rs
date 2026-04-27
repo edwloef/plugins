@@ -1,4 +1,4 @@
-use crate::AtomicF32;
+use crate::{AtomicF32, amp_to_db, db_to_amp};
 use clack_extensions::{
 	audio_ports::{
 		AudioPortFlags, AudioPortInfo, AudioPortInfoWriter, AudioPortType, PluginAudioPorts,
@@ -342,12 +342,4 @@ impl PluginStateImpl for MainThread<'_> {
 
 		Ok(())
 	}
-}
-
-fn amp_to_db(amp: f32) -> f32 {
-	20.0 * amp.log10()
-}
-
-fn db_to_amp(db: f32) -> f32 {
-	10f32.powf(db / 20.0)
 }
