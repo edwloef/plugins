@@ -1,4 +1,8 @@
-use crate::{AtomicF32, amp_to_db, db_to_amp};
+use crate::{
+	AtomicF32, amp_to_db,
+	biquad::{Biquad, BiquadCoeffs},
+	db_to_amp,
+};
 use clack_extensions::{
 	audio_ports::{
 		AudioPortFlags, AudioPortInfo, AudioPortInfoWriter, AudioPortType, PluginAudioPorts,
@@ -18,6 +22,7 @@ use clack_plugin::{
 	utils::Cookie,
 };
 use std::{
+	f32::consts::FRAC_1_SQRT_2,
 	ffi::CStr,
 	fmt::Write as _,
 	io::{Read, Write as _},
@@ -56,8 +61,8 @@ impl DefaultPluginFactory for Dcc {
 	fn new_shared(_host: HostSharedHandle<'_>) -> Result<Self::Shared<'_>, PluginError> {
 		Ok(Shared {
 			pregain: AtomicF32::new(1.0),
-			offset: AtomicF32::new(0.0),
-			skew: AtomicF32::new(0.0),
+			spread: AtomicF32::new(0.0),
+			detail: AtomicF32::new(0.0),
 			postgain: AtomicF32::new(1.0),
 		})
 	}
@@ -72,6 +77,7 @@ impl DefaultPluginFactory for Dcc {
 
 pub struct AudioProcessor<'a> {
 	shared: &'a Shared,
+	filters: [Biquad; 2],
 }
 
 impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for AudioProcessor<'a> {
@@ -79,9 +85,17 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for AudioProcessor<'a>
 		_host: HostAudioProcessorHandle<'_>,
 		_main_thread: &mut MainThread,
 		shared: &'a Shared,
-		_audio_config: PluginAudioConfiguration,
+		audio_config: PluginAudioConfiguration,
 	) -> Result<Self, PluginError> {
-		Ok(Self { shared })
+		let filter = Biquad::new(BiquadCoeffs::highpass(
+			audio_config.sample_rate as f32,
+			2000.0,
+			FRAC_1_SQRT_2,
+		));
+		Ok(Self {
+			shared,
+			filters: [filter; 2],
+		})
 	}
 
 	fn process(
@@ -101,14 +115,24 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for AudioProcessor<'a>
 			self.shared.flush(batch.events());
 
 			let pregain = self.shared.pregain.load();
-			let offset = self.shared.offset.load();
-			let mut skew = self.shared.skew.load();
+			let spread = self.shared.spread.load();
+			let detail = self.shared.detail.load();
 			let postgain = self.shared.postgain.load();
 
-			for channel in channels.iter_mut() {
-				let combined = skew - offset;
-				let lower = combined.max(0.0) - 1.0;
-				let upper = combined.min(0.0) + 1.0;
+			let lower = spread.max(0.0) - 1.0;
+			let upper = spread.min(0.0) + 1.0;
+			let limits = [(lower, upper), (-upper, -lower)];
+
+			for (channel, (filter, (lower, upper))) in
+				channels.iter_mut().zip(self.filters.iter_mut().zip(limits))
+			{
+				let mut process = |input: f32| {
+					((input * pregain).clamp(lower, upper)
+						+ (filter.tick((input * pregain).clamp(lower, upper) - (input * pregain))
+							* detail))
+						.clamp(lower, upper)
+						* postgain
+				};
 
 				match channel {
 					ChannelPair::InputOnly(_) => {
@@ -119,7 +143,7 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for AudioProcessor<'a>
 					}
 					ChannelPair::InPlace(in_place) => {
 						for in_place in &mut in_place[batch.sample_bounds()] {
-							*in_place = (*in_place * pregain).clamp(lower, upper) * postgain;
+							*in_place = process(*in_place);
 						}
 					}
 					ChannelPair::InputOutput(input, output) => {
@@ -127,22 +151,26 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for AudioProcessor<'a>
 							.iter()
 							.zip(&mut output[batch.sample_bounds()])
 						{
-							*output = (*input * pregain).clamp(lower, upper) * postgain;
+							*output = process(*input);
 						}
 					}
 				}
-
-				skew = -skew;
 			}
 		}
 
 		Ok(ProcessStatus::ContinueIfNotQuiet)
 	}
+
+	fn reset(&mut self) {
+		for filter in &mut self.filters {
+			filter.reset();
+		}
+	}
 }
 
 const PARAM_PREGAIN: ClapId = ClapId::new(0);
-const PARAM_OFFSET: ClapId = ClapId::new(1);
-const PARAM_SKEW: ClapId = ClapId::new(2);
+const PARAM_SPREAD: ClapId = ClapId::new(1);
+const PARAM_DETAIL: ClapId = ClapId::new(2);
 const PARAM_POSTGAIN: ClapId = ClapId::new(3);
 
 impl PluginAudioProcessorParams for AudioProcessor<'_> {
@@ -157,8 +185,8 @@ impl PluginAudioProcessorParams for AudioProcessor<'_> {
 
 pub struct Shared {
 	pregain: AtomicF32,
-	offset: AtomicF32,
-	skew: AtomicF32,
+	spread: AtomicF32,
+	detail: AtomicF32,
 	postgain: AtomicF32,
 }
 
@@ -170,8 +198,8 @@ impl Shared {
 			{
 				match param_id {
 					PARAM_PREGAIN => self.pregain.store(db_to_amp(event.value() as f32)),
-					PARAM_OFFSET => self.offset.store(event.value() as f32),
-					PARAM_SKEW => self.skew.store(event.value() as f32),
+					PARAM_SPREAD => self.spread.store(event.value() as f32),
+					PARAM_DETAIL => self.detail.store(event.value() as f32),
 					PARAM_POSTGAIN => self.postgain.store(db_to_amp(event.value() as f32)),
 					_ => {}
 				}
@@ -214,8 +242,8 @@ impl PluginMainThreadParams for MainThread<'_> {
 	}
 
 	fn get_info(&mut self, param_index: u32, info: &mut ParamInfoWriter) {
-		match param_index {
-			0 => info.set(&ParamInfo {
+		info.set(&match param_index {
+			0 => ParamInfo {
 				id: PARAM_PREGAIN,
 				flags: ParamInfoFlags::IS_AUTOMATABLE | ParamInfoFlags::IS_MODULATABLE,
 				cookie: Cookie::empty(),
@@ -224,28 +252,28 @@ impl PluginMainThreadParams for MainThread<'_> {
 				min_value: -12.0,
 				max_value: 12.0,
 				default_value: 0.0,
-			}),
-			1 => info.set(&ParamInfo {
-				id: PARAM_OFFSET,
+			},
+			1 => ParamInfo {
+				id: PARAM_SPREAD,
 				flags: ParamInfoFlags::IS_AUTOMATABLE | ParamInfoFlags::IS_MODULATABLE,
 				cookie: Cookie::empty(),
-				name: b"offset",
+				name: b"spread",
 				module: b"",
 				min_value: -1.0,
 				max_value: 1.0,
 				default_value: 0.0,
-			}),
-			2 => info.set(&ParamInfo {
-				id: PARAM_SKEW,
+			},
+			2 => ParamInfo {
+				id: PARAM_DETAIL,
 				flags: ParamInfoFlags::IS_AUTOMATABLE | ParamInfoFlags::IS_MODULATABLE,
 				cookie: Cookie::empty(),
-				name: b"skew",
+				name: b"detail",
 				module: b"",
-				min_value: -1.0,
+				min_value: 0.0,
 				max_value: 1.0,
 				default_value: 0.0,
-			}),
-			3 => info.set(&ParamInfo {
+			},
+			3 => ParamInfo {
 				id: PARAM_POSTGAIN,
 				flags: ParamInfoFlags::IS_AUTOMATABLE | ParamInfoFlags::IS_MODULATABLE,
 				cookie: Cookie::empty(),
@@ -254,16 +282,16 @@ impl PluginMainThreadParams for MainThread<'_> {
 				min_value: -12.0,
 				max_value: 12.0,
 				default_value: 0.0,
-			}),
-			_ => {}
-		}
+			},
+			_ => return,
+		})
 	}
 
 	fn get_value(&mut self, param_id: ClapId) -> Option<f64> {
 		match param_id {
 			PARAM_PREGAIN => Some(f64::from(amp_to_db(self.shared.pregain.load()))),
-			PARAM_OFFSET => Some(self.shared.offset.load().into()),
-			PARAM_SKEW => Some(self.shared.skew.load().into()),
+			PARAM_SPREAD => Some(self.shared.spread.load().into()),
+			PARAM_DETAIL => Some(self.shared.detail.load().into()),
 			PARAM_POSTGAIN => Some(f64::from(amp_to_db(self.shared.postgain.load()))),
 			_ => None,
 		}
@@ -277,7 +305,9 @@ impl PluginMainThreadParams for MainThread<'_> {
 	) -> std::fmt::Result {
 		match param_id {
 			PARAM_PREGAIN | PARAM_POSTGAIN => write!(writer, "{value:.1}dB"),
-			PARAM_OFFSET | PARAM_SKEW => write!(writer, "{}%", (value * 100.0).round() as i8),
+			PARAM_SPREAD | PARAM_DETAIL => {
+				write!(writer, "{}%", (value * 100.0).round() as i8)
+			}
 			_ => Err(std::fmt::Error),
 		}
 	}
@@ -302,7 +332,7 @@ impl PluginMainThreadParams for MainThread<'_> {
 				.trim()
 				.parse::<f64>()
 				.ok(),
-			PARAM_OFFSET | PARAM_SKEW => Some(
+			PARAM_SPREAD | PARAM_DETAIL => Some(
 				text.trim()
 					.strip_suffix("%")
 					.unwrap_or(text)
@@ -321,9 +351,9 @@ impl PluginStateImpl for MainThread<'_> {
 		input.read_exact(&mut buf)?;
 		self.shared.pregain.store(f32::from_ne_bytes(buf));
 		input.read_exact(&mut buf)?;
-		self.shared.offset.store(f32::from_ne_bytes(buf));
+		self.shared.spread.store(f32::from_ne_bytes(buf));
 		input.read_exact(&mut buf)?;
-		self.shared.skew.store(f32::from_ne_bytes(buf));
+		self.shared.detail.store(f32::from_ne_bytes(buf));
 		input.read_exact(&mut buf)?;
 		self.shared.postgain.store(f32::from_ne_bytes(buf));
 
@@ -336,8 +366,8 @@ impl PluginStateImpl for MainThread<'_> {
 
 	fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
 		output.write_all(&self.shared.pregain.load().to_ne_bytes())?;
-		output.write_all(&self.shared.offset.load().to_ne_bytes())?;
-		output.write_all(&self.shared.skew.load().to_ne_bytes())?;
+		output.write_all(&self.shared.spread.load().to_ne_bytes())?;
+		output.write_all(&self.shared.detail.load().to_ne_bytes())?;
 		output.write_all(&self.shared.postgain.load().to_ne_bytes())?;
 
 		Ok(())

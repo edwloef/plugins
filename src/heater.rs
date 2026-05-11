@@ -103,6 +103,14 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for AudioProcessor<'a>
 			let intensity = self.shared.intensity.load();
 			let postgain = self.shared.postgain.load();
 
+			let process = |input: f32| {
+				(input * pregain)
+					* (intensity
+						/ f32::sqrt(intensity.powi(2) * ((input * pregain).powi(2) - 1.0) + 1.0)
+						+ (1.0 - intensity))
+					* postgain
+			};
+
 			for channel in channels.iter_mut() {
 				match channel {
 					ChannelPair::InputOnly(_) => {
@@ -113,12 +121,7 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for AudioProcessor<'a>
 					}
 					ChannelPair::InPlace(in_place) => {
 						for in_place in &mut in_place[batch.sample_bounds()] {
-							*in_place = (*in_place * pregain)
-								* (intensity
-									/ f32::sqrt(
-										intensity.powi(2) * ((*in_place * pregain).powi(2) - 1.0)
-											+ 1.0,
-									) + (1.0 - intensity)) * postgain;
+							*in_place = process(*in_place);
 						}
 					}
 					ChannelPair::InputOutput(input, output) => {
@@ -126,12 +129,7 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for AudioProcessor<'a>
 							.iter()
 							.zip(&mut output[batch.sample_bounds()])
 						{
-							*output = (*input * pregain)
-								* (intensity
-									/ f32::sqrt(
-										intensity.powi(2) * ((*input * pregain).powi(2) - 1.0)
-											+ 1.0,
-									) + (1.0 - intensity)) * postgain;
+							*output = process(*input);
 						}
 					}
 				}
@@ -213,8 +211,8 @@ impl PluginMainThreadParams for MainThread<'_> {
 	}
 
 	fn get_info(&mut self, param_index: u32, info: &mut ParamInfoWriter) {
-		match param_index {
-			0 => info.set(&ParamInfo {
+		info.set(&match param_index {
+			0 => ParamInfo {
 				id: PARAM_PREGAIN,
 				flags: ParamInfoFlags::IS_AUTOMATABLE | ParamInfoFlags::IS_MODULATABLE,
 				cookie: Cookie::empty(),
@@ -223,8 +221,8 @@ impl PluginMainThreadParams for MainThread<'_> {
 				min_value: -12.0,
 				max_value: 12.0,
 				default_value: 0.0,
-			}),
-			1 => info.set(&ParamInfo {
+			},
+			1 => ParamInfo {
 				id: PARAM_INTENSITY,
 				flags: ParamInfoFlags::IS_AUTOMATABLE | ParamInfoFlags::IS_MODULATABLE,
 				cookie: Cookie::empty(),
@@ -233,8 +231,8 @@ impl PluginMainThreadParams for MainThread<'_> {
 				min_value: 0.0,
 				max_value: 0.995,
 				default_value: 0.0,
-			}),
-			2 => info.set(&ParamInfo {
+			},
+			2 => ParamInfo {
 				id: PARAM_POSTGAIN,
 				flags: ParamInfoFlags::IS_AUTOMATABLE | ParamInfoFlags::IS_MODULATABLE,
 				cookie: Cookie::empty(),
@@ -243,9 +241,9 @@ impl PluginMainThreadParams for MainThread<'_> {
 				min_value: -12.0,
 				max_value: 12.0,
 				default_value: 0.0,
-			}),
-			_ => {}
-		}
+			},
+			_ => return,
+		})
 	}
 
 	fn get_value(&mut self, param_id: ClapId) -> Option<f64> {
