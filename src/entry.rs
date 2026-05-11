@@ -8,7 +8,7 @@ pub struct Plugins(PluginFactoryWrapper<PluginFactory>);
 
 impl Entry for Plugins {
 	fn new(_bundle_path: Option<&CStr>) -> Result<Self, EntryLoadError> {
-		Ok(Plugins(PluginFactoryWrapper::new(PluginFactory {
+		Ok(Self(PluginFactoryWrapper::new(PluginFactory {
 			dcc: Dcc::get_descriptor(),
 			whiteout: Whiteout::get_descriptor(),
 			heater: Heater::get_descriptor(),

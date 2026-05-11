@@ -17,14 +17,14 @@ clack-extensions = { git = "https://github.com/prokopyl/clack.git", features = [
 clack-plugin = { git = "https://github.com/prokopyl/clack.git" }
 fastrand = "2.4.1"
 
-[workspace.lints.rust]
+[lints.rust]
 missing_copy_implementations = "warn"
 missing_debug_implementations = "warn"
 rust_2018_idioms = "warn"
 unused_crate_dependencies = "warn"
 unused_qualifications = "warn"
 
-[workspace.lints.clippy]
+[lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 cast_possible_truncation = "allow"
 cast_possible_wrap = "allow"

@@ -11,6 +11,7 @@ pub struct BiquadCoeffs {
 
 impl BiquadCoeffs {
 	#[must_use]
+	#[expect(clippy::manual_midpoint)]
 	pub fn highpass(sample_rate: f32, cutoff: f32, q: f32) -> Self {
 		let omega = TAU * cutoff / sample_rate;
 		let (sin_omega, cos_omega) = omega.sin_cos();

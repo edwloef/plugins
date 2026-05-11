@@ -14,7 +14,7 @@ impl AtomicF32 {
 	}
 
 	fn store(&self, value: f32) {
-		self.0.store(value.to_bits(), Ordering::Relaxed)
+		self.0.store(value.to_bits(), Ordering::Relaxed);
 	}
 
 	fn load(&self) -> f32 {

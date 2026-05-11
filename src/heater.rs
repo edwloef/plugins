@@ -20,7 +20,7 @@ use clack_plugin::{
 use std::{
 	ffi::CStr,
 	fmt::Write as _,
-	io::{Read, Write as _},
+	io::{Read as _, Write as _},
 };
 
 pub struct Heater;
@@ -35,7 +35,7 @@ impl Plugin for Heater {
 	type MainThread<'a> = MainThread<'a>;
 
 	fn declare_extensions(
-		builder: &mut PluginExtensions<Self>,
+		builder: &mut PluginExtensions<'_, Self>,
 		_shared: Option<&Self::Shared<'_>>,
 	) {
 		builder
@@ -76,7 +76,7 @@ pub struct AudioProcessor<'a> {
 impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for AudioProcessor<'a> {
 	fn activate(
 		_host: HostAudioProcessorHandle<'_>,
-		_main_thread: &mut MainThread,
+		_main_thread: &mut MainThread<'_>,
 		shared: &'a Shared,
 		_audio_config: PluginAudioConfiguration,
 	) -> Result<Self, PluginError> {
@@ -85,9 +85,9 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for AudioProcessor<'a>
 
 	fn process(
 		&mut self,
-		_process: Process,
-		mut audio: Audio,
-		events: Events,
+		_process: Process<'_>,
+		mut audio: Audio<'_>,
+		events: Events<'_>,
 	) -> Result<ProcessStatus, PluginError> {
 		let mut channels = audio
 			.port_pair(0)
@@ -147,8 +147,8 @@ const PARAM_POSTGAIN: ClapId = ClapId::new(2);
 impl PluginAudioProcessorParams for AudioProcessor<'_> {
 	fn flush(
 		&mut self,
-		input_parameter_changes: &InputEvents,
-		_output_parameter_changes: &mut OutputEvents,
+		input_parameter_changes: &InputEvents<'_>,
+		_output_parameter_changes: &mut OutputEvents<'_>,
 	) {
 		self.shared.flush(input_parameter_changes);
 	}
@@ -191,7 +191,7 @@ impl PluginAudioPortsImpl for MainThread<'_> {
 		1
 	}
 
-	fn get(&mut self, index: u32, _is_input: bool, writer: &mut AudioPortInfoWriter) {
+	fn get(&mut self, index: u32, _is_input: bool, writer: &mut AudioPortInfoWriter<'_>) {
 		if index == 0 {
 			writer.set(&AudioPortInfo {
 				id: ClapId::new(0),
@@ -210,7 +210,7 @@ impl PluginMainThreadParams for MainThread<'_> {
 		3
 	}
 
-	fn get_info(&mut self, param_index: u32, info: &mut ParamInfoWriter) {
+	fn get_info(&mut self, param_index: u32, info: &mut ParamInfoWriter<'_>) {
 		info.set(&match param_index {
 			0 => ParamInfo {
 				id: PARAM_PREGAIN,
@@ -243,7 +243,7 @@ impl PluginMainThreadParams for MainThread<'_> {
 				default_value: 0.0,
 			},
 			_ => return,
-		})
+		});
 	}
 
 	fn get_value(&mut self, param_id: ClapId) -> Option<f64> {
@@ -259,7 +259,7 @@ impl PluginMainThreadParams for MainThread<'_> {
 		&mut self,
 		param_id: ClapId,
 		value: f64,
-		writer: &mut ParamDisplayWriter,
+		writer: &mut ParamDisplayWriter<'_>,
 	) -> std::fmt::Result {
 		match param_id {
 			PARAM_PREGAIN | PARAM_POSTGAIN => write!(writer, "{value:.1}dB"),
@@ -270,8 +270,8 @@ impl PluginMainThreadParams for MainThread<'_> {
 
 	fn flush(
 		&mut self,
-		input_parameter_changes: &InputEvents,
-		_output_parameter_changes: &mut OutputEvents,
+		input_parameter_changes: &InputEvents<'_>,
+		_output_parameter_changes: &mut OutputEvents<'_>,
 	) {
 		self.shared.flush(input_parameter_changes);
 	}
@@ -302,7 +302,7 @@ impl PluginMainThreadParams for MainThread<'_> {
 }
 
 impl PluginStateImpl for MainThread<'_> {
-	fn load(&mut self, input: &mut InputStream) -> Result<(), PluginError> {
+	fn load(&mut self, input: &mut InputStream<'_>) -> Result<(), PluginError> {
 		let mut buf = [0; 4];
 		input.read_exact(&mut buf)?;
 		self.shared.pregain.store(f32::from_ne_bytes(buf));
@@ -318,7 +318,7 @@ impl PluginStateImpl for MainThread<'_> {
 		Ok(())
 	}
 
-	fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
+	fn save(&mut self, output: &mut OutputStream<'_>) -> Result<(), PluginError> {
 		output.write_all(&self.shared.pregain.load().to_ne_bytes())?;
 		output.write_all(&self.shared.intensity.load().to_ne_bytes())?;
 		output.write_all(&self.shared.postgain.load().to_ne_bytes())?;
