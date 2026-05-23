@@ -262,7 +262,7 @@ impl PluginMainThreadParams for MainThread<'_> {
 		writer: &mut ParamDisplayWriter<'_>,
 	) -> std::fmt::Result {
 		match param_id {
-			PARAM_PREGAIN | PARAM_POSTGAIN => write!(writer, "{value:.1}dB"),
+			PARAM_PREGAIN | PARAM_POSTGAIN => write!(writer, "{value:.1} dB"),
 			PARAM_INTENSITY => write!(writer, "{}%", (value * 100.0).round() as i8),
 			_ => Err(std::fmt::Error),
 		}
