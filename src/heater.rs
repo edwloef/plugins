@@ -104,11 +104,7 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for AudioProcessor<'a>
 			let postgain = self.shared.postgain.load();
 
 			let process = |input: f32| {
-				(input * pregain)
-					* (intensity
-						/ f32::sqrt(intensity.powi(2) * ((input * pregain).powi(2) - 1.0) + 1.0)
-						+ (1.0 - intensity))
-					* postgain
+				(input * pregain) / (intensity * ((input * pregain).abs() - 1.0) + 1.0) * postgain
 			};
 
 			for channel in channels.iter_mut() {
@@ -168,7 +164,7 @@ impl Shared {
 			{
 				match param_id {
 					PARAM_PREGAIN => self.pregain.store(db_to_amp(event.value() as f32)),
-					PARAM_INTENSITY => self.intensity.store((event.value() as f32).cbrt()),
+					PARAM_INTENSITY => self.intensity.store(event.value() as f32),
 					PARAM_POSTGAIN => self.postgain.store(db_to_amp(event.value() as f32)),
 					_ => {}
 				}
@@ -229,7 +225,7 @@ impl PluginMainThreadParams for MainThread<'_> {
 				name: b"intensity",
 				module: b"",
 				min_value: 0.0,
-				max_value: 0.995,
+				max_value: 1f32.next_down().into(),
 				default_value: 0.0,
 			},
 			2 => ParamInfo {
@@ -248,9 +244,9 @@ impl PluginMainThreadParams for MainThread<'_> {
 
 	fn get_value(&mut self, param_id: ClapId) -> Option<f64> {
 		match param_id {
-			PARAM_PREGAIN => Some(f64::from(amp_to_db(self.shared.pregain.load()))),
-			PARAM_INTENSITY => Some(self.shared.intensity.load().powi(3).into()),
-			PARAM_POSTGAIN => Some(f64::from(amp_to_db(self.shared.postgain.load()))),
+			PARAM_PREGAIN => Some(amp_to_db(self.shared.pregain.load()).into()),
+			PARAM_INTENSITY => Some(self.shared.intensity.load().into()),
+			PARAM_POSTGAIN => Some(amp_to_db(self.shared.postgain.load()).into()),
 			_ => None,
 		}
 	}

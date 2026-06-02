@@ -289,10 +289,10 @@ impl PluginMainThreadParams for MainThread<'_> {
 
 	fn get_value(&mut self, param_id: ClapId) -> Option<f64> {
 		match param_id {
-			PARAM_PREGAIN => Some(f64::from(amp_to_db(self.shared.pregain.load()))),
+			PARAM_PREGAIN => Some(amp_to_db(self.shared.pregain.load()).into()),
 			PARAM_SPREAD => Some(self.shared.spread.load().into()),
 			PARAM_DETAIL => Some(self.shared.detail.load().into()),
-			PARAM_POSTGAIN => Some(f64::from(amp_to_db(self.shared.postgain.load()))),
+			PARAM_POSTGAIN => Some(amp_to_db(self.shared.postgain.load()).into()),
 			_ => None,
 		}
 	}
