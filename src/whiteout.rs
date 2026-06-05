@@ -1,4 +1,4 @@
-use crate::AtomicF32;
+use crate::Param;
 use clack_extensions::{
 	audio_ports::{
 		AudioPortFlags, AudioPortInfo, AudioPortInfoWriter, AudioPortType, PluginAudioPorts,
@@ -56,8 +56,8 @@ impl DefaultPluginFactory for Whiteout {
 
 	fn new_shared(_host: HostSharedHandle<'_>) -> Result<Self::Shared<'_>, PluginError> {
 		Ok(Shared {
-			loss: AtomicF32::new(1.0),
-			intensity: AtomicF32::new(1.0),
+			loss: Param::new(1.0),
+			intensity: Param::new(1.0),
 		})
 	}
 
@@ -103,8 +103,8 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for AudioProcessor<'a>
 		for batch in events.input.batch() {
 			self.shared.flush(batch.events());
 
-			let loss = self.shared.loss.load();
-			let intensity = self.shared.intensity.load();
+			let loss = self.shared.loss.load_combined();
+			let intensity = self.shared.intensity.load_combined();
 
 			let mut process = |input: f32| {
 				if self.rng.f32_inclusive() <= loss {
@@ -161,21 +161,25 @@ impl PluginAudioProcessorParams for AudioProcessor<'_> {
 }
 
 pub struct Shared {
-	loss: AtomicF32,
-	intensity: AtomicF32,
+	loss: Param,
+	intensity: Param,
 }
 
 impl Shared {
 	fn flush<'a>(&self, input_parameter_changes: impl IntoIterator<Item = &'a UnknownEvent>) {
 		for event in input_parameter_changes {
-			if let Some(CoreEventSpace::ParamValue(event)) = event.as_core_event()
-				&& let Some(param_id) = event.param_id()
-			{
-				match param_id {
-					PARAM_LOSS => self.loss.store((event.value() as f32).powi(3)),
-					PARAM_INTENSITY => self.intensity.store(event.value() as f32),
+			match event.as_core_event() {
+				Some(CoreEventSpace::ParamValue(event)) => match event.param_id() {
+					Some(PARAM_LOSS) => self.loss.store_value((event.value() as f32).powi(3)),
+					Some(PARAM_INTENSITY) => self.intensity.store_value(event.value() as f32),
 					_ => {}
-				}
+				},
+				Some(CoreEventSpace::ParamMod(event)) => match event.param_id() {
+					Some(PARAM_LOSS) => self.loss.store_mod((event.amount() as f32).powi(3)),
+					Some(PARAM_INTENSITY) => self.intensity.store_mod(event.amount() as f32),
+					_ => {}
+				},
+				_ => {}
 			}
 		}
 	}
@@ -242,8 +246,8 @@ impl PluginMainThreadParams for MainThread<'_> {
 
 	fn get_value(&mut self, param_id: ClapId) -> Option<f64> {
 		match param_id {
-			PARAM_LOSS => Some(self.shared.loss.load().cbrt().into()),
-			PARAM_INTENSITY => Some(self.shared.intensity.load().into()),
+			PARAM_LOSS => Some(self.shared.loss.load_value().cbrt().into()),
+			PARAM_INTENSITY => Some(self.shared.intensity.load_value().into()),
 			_ => None,
 		}
 	}
@@ -289,9 +293,9 @@ impl PluginStateImpl for MainThread<'_> {
 	fn load(&mut self, input: &mut InputStream<'_>) -> Result<(), PluginError> {
 		let mut buf = [0; 4];
 		input.read_exact(&mut buf)?;
-		self.shared.loss.store(f32::from_ne_bytes(buf));
+		self.shared.loss.store_value(f32::from_ne_bytes(buf));
 		input.read_exact(&mut buf)?;
-		self.shared.intensity.store(f32::from_ne_bytes(buf));
+		self.shared.intensity.store_value(f32::from_ne_bytes(buf));
 
 		if let Some(params) = self.host.get_extension::<HostParams>() {
 			params.rescan(&mut self.host, ParamRescanFlags::VALUES);
@@ -301,8 +305,8 @@ impl PluginStateImpl for MainThread<'_> {
 	}
 
 	fn save(&mut self, output: &mut OutputStream<'_>) -> Result<(), PluginError> {
-		output.write_all(&self.shared.loss.load().to_ne_bytes())?;
-		output.write_all(&self.shared.intensity.load().to_ne_bytes())?;
+		output.write_all(&self.shared.loss.load_value().to_ne_bytes())?;
+		output.write_all(&self.shared.intensity.load_value().to_ne_bytes())?;
 
 		Ok(())
 	}

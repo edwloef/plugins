@@ -6,6 +6,36 @@ mod entry;
 mod heater;
 mod whiteout;
 
+struct Param {
+	value: AtomicF32,
+	r#mod: AtomicF32,
+}
+
+impl Param {
+	fn new(value: f32) -> Self {
+		Self {
+			value: AtomicF32::new(value),
+			r#mod: AtomicF32::new(0.0),
+		}
+	}
+
+	fn store_value(&self, value: f32) {
+		self.value.store(value);
+	}
+
+	fn store_mod(&self, r#mod: f32) {
+		self.r#mod.store(r#mod);
+	}
+
+	fn load_value(&self) -> f32 {
+		self.value.load()
+	}
+
+	fn load_combined(&self) -> f32 {
+		self.value.load() + self.r#mod.load()
+	}
+}
+
 struct AtomicF32(AtomicU32);
 
 impl AtomicF32 {

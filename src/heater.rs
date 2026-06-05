@@ -1,4 +1,4 @@
-use crate::{AtomicF32, amp_to_db, db_to_amp};
+use crate::{Param, amp_to_db, db_to_amp};
 use clack_extensions::{
 	audio_ports::{
 		AudioPortFlags, AudioPortInfo, AudioPortInfoWriter, AudioPortType, PluginAudioPorts,
@@ -55,9 +55,9 @@ impl DefaultPluginFactory for Heater {
 
 	fn new_shared(_host: HostSharedHandle<'_>) -> Result<Self::Shared<'_>, PluginError> {
 		Ok(Shared {
-			pregain: AtomicF32::new(1.0),
-			intensity: AtomicF32::new(0.0),
-			postgain: AtomicF32::new(1.0),
+			pregain: Param::new(1.0),
+			intensity: Param::new(0.0),
+			postgain: Param::new(1.0),
 		})
 	}
 
@@ -99,9 +99,9 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for AudioProcessor<'a>
 		for batch in events.input.batch() {
 			self.shared.flush(batch.events());
 
-			let pregain = self.shared.pregain.load();
-			let intensity = self.shared.intensity.load();
-			let postgain = self.shared.postgain.load();
+			let pregain = self.shared.pregain.load_combined();
+			let intensity = self.shared.intensity.load_combined();
+			let postgain = self.shared.postgain.load_combined();
 
 			let process = |input: f32| {
 				(input * pregain) / (intensity * ((input * pregain).abs() - 1.0) + 1.0) * postgain
@@ -151,23 +151,34 @@ impl PluginAudioProcessorParams for AudioProcessor<'_> {
 }
 
 pub struct Shared {
-	pregain: AtomicF32,
-	intensity: AtomicF32,
-	postgain: AtomicF32,
+	pregain: Param,
+	intensity: Param,
+	postgain: Param,
 }
 
 impl Shared {
 	fn flush<'a>(&self, input_parameter_changes: impl IntoIterator<Item = &'a UnknownEvent>) {
 		for event in input_parameter_changes {
-			if let Some(CoreEventSpace::ParamValue(event)) = event.as_core_event()
-				&& let Some(param_id) = event.param_id()
-			{
-				match param_id {
-					PARAM_PREGAIN => self.pregain.store(db_to_amp(event.value() as f32)),
-					PARAM_INTENSITY => self.intensity.store(event.value() as f32),
-					PARAM_POSTGAIN => self.postgain.store(db_to_amp(event.value() as f32)),
+			match event.as_core_event() {
+				Some(CoreEventSpace::ParamValue(event)) => match event.param_id() {
+					Some(PARAM_PREGAIN) => {
+						self.pregain.store_value(db_to_amp(event.value() as f32));
+					}
+					Some(PARAM_INTENSITY) => self.intensity.store_value(event.value() as f32),
+					Some(PARAM_POSTGAIN) => {
+						self.postgain.store_value(db_to_amp(event.value() as f32));
+					}
 					_ => {}
-				}
+				},
+				Some(CoreEventSpace::ParamMod(event)) => match event.param_id() {
+					Some(PARAM_PREGAIN) => self.pregain.store_mod(db_to_amp(event.amount() as f32)),
+					Some(PARAM_INTENSITY) => self.intensity.store_mod(event.amount() as f32),
+					Some(PARAM_POSTGAIN) => {
+						self.postgain.store_mod(db_to_amp(event.amount() as f32));
+					}
+					_ => {}
+				},
+				_ => {}
 			}
 		}
 	}
@@ -244,9 +255,9 @@ impl PluginMainThreadParams for MainThread<'_> {
 
 	fn get_value(&mut self, param_id: ClapId) -> Option<f64> {
 		match param_id {
-			PARAM_PREGAIN => Some(amp_to_db(self.shared.pregain.load()).into()),
-			PARAM_INTENSITY => Some(self.shared.intensity.load().into()),
-			PARAM_POSTGAIN => Some(amp_to_db(self.shared.postgain.load()).into()),
+			PARAM_PREGAIN => Some(amp_to_db(self.shared.pregain.load_value()).into()),
+			PARAM_INTENSITY => Some(self.shared.intensity.load_value().into()),
+			PARAM_POSTGAIN => Some(amp_to_db(self.shared.postgain.load_value()).into()),
 			_ => None,
 		}
 	}
@@ -301,11 +312,11 @@ impl PluginStateImpl for MainThread<'_> {
 	fn load(&mut self, input: &mut InputStream<'_>) -> Result<(), PluginError> {
 		let mut buf = [0; 4];
 		input.read_exact(&mut buf)?;
-		self.shared.pregain.store(f32::from_ne_bytes(buf));
+		self.shared.pregain.store_value(f32::from_ne_bytes(buf));
 		input.read_exact(&mut buf)?;
-		self.shared.intensity.store(f32::from_ne_bytes(buf));
+		self.shared.intensity.store_value(f32::from_ne_bytes(buf));
 		input.read_exact(&mut buf)?;
-		self.shared.postgain.store(f32::from_ne_bytes(buf));
+		self.shared.postgain.store_value(f32::from_ne_bytes(buf));
 
 		if let Some(params) = self.host.get_extension::<HostParams>() {
 			params.rescan(&mut self.host, ParamRescanFlags::VALUES);
@@ -315,9 +326,9 @@ impl PluginStateImpl for MainThread<'_> {
 	}
 
 	fn save(&mut self, output: &mut OutputStream<'_>) -> Result<(), PluginError> {
-		output.write_all(&self.shared.pregain.load().to_ne_bytes())?;
-		output.write_all(&self.shared.intensity.load().to_ne_bytes())?;
-		output.write_all(&self.shared.postgain.load().to_ne_bytes())?;
+		output.write_all(&self.shared.pregain.load_value().to_ne_bytes())?;
+		output.write_all(&self.shared.intensity.load_value().to_ne_bytes())?;
+		output.write_all(&self.shared.postgain.load_value().to_ne_bytes())?;
 
 		Ok(())
 	}
