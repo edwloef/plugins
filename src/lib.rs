@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
 mod biquad;
+mod cooler;
 mod dcc;
 mod entry;
 mod heater;
