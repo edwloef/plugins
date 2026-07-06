@@ -1,4 +1,4 @@
-use crate::{cooler::Cooler, dcc::Dcc, heater::Heater, whiteout::Whiteout};
+use crate::{cooler::Cooler, dcc::Dcc, heater::Heater, vice::Vice, whiteout::Whiteout};
 use clack_plugin::{entry::prelude::*, prelude::*};
 use std::ffi::CStr;
 
@@ -12,6 +12,7 @@ impl Entry for Plugins {
 			cooler: Cooler::get_descriptor(),
 			dcc: Dcc::get_descriptor(),
 			heater: Heater::get_descriptor(),
+			vice: Vice::get_descriptor(),
 			whiteout: Whiteout::get_descriptor(),
 		})))
 	}
@@ -25,12 +26,13 @@ struct PluginFactory {
 	cooler: PluginDescriptor,
 	dcc: PluginDescriptor,
 	heater: PluginDescriptor,
+	vice: PluginDescriptor,
 	whiteout: PluginDescriptor,
 }
 
 impl PluginFactoryImpl for PluginFactory {
 	fn plugin_count(&self) -> u32 {
-		4
+		5
 	}
 
 	fn plugin_descriptor(&self, index: u32) -> Option<&PluginDescriptor> {
@@ -38,7 +40,8 @@ impl PluginFactoryImpl for PluginFactory {
 			0 => Some(&self.cooler),
 			1 => Some(&self.dcc),
 			2 => Some(&self.heater),
-			3 => Some(&self.whiteout),
+			3 => Some(&self.vice),
+			4 => Some(&self.whiteout),
 			_ => None,
 		}
 	}
@@ -66,6 +69,12 @@ impl PluginFactoryImpl for PluginFactory {
 				&self.heater,
 				Heater::new_shared,
 				Heater::new_main_thread,
+			)),
+			Vice::ID => Some(PluginInstance::new::<Vice>(
+				host_info,
+				&self.vice,
+				Vice::new_shared,
+				Vice::new_main_thread,
 			)),
 			Whiteout::ID => Some(PluginInstance::new::<Whiteout>(
 				host_info,

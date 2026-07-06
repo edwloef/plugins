@@ -5,6 +5,7 @@ mod cooler;
 mod dcc;
 mod entry;
 mod heater;
+mod vice;
 mod whiteout;
 
 struct Param {
@@ -59,4 +60,8 @@ fn amp_to_db(amp: f32) -> f32 {
 
 fn db_to_amp(db: f32) -> f32 {
 	10f32.powf(db / 20.0)
+}
+
+fn ms_to_coeff(secs: f32, sample_rate: f32) -> f32 {
+	(-1000.0 / (secs * sample_rate)).exp()
 }
