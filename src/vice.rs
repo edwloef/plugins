@@ -127,9 +127,13 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for AudioProcessor<'a>
 				};
 				self.envelope = self.envelope * phase + max_abs * (1.0 - phase);
 				let in_db = amp_to_db(self.envelope);
-				let compressed = low + (in_db - low) / ratio;
-				let t = ((in_db - low) / (high - low)).clamp(0.0, 1.0);
-				let out_db = in_db * (1.0 - t) + compressed * t;
+				let out_db = if in_db <= low {
+					in_db
+				} else if in_db >= high {
+					threshold + (in_db - threshold) / ratio
+				} else {
+					in_db + (1.0 / ratio - 1.0) * (in_db - low).powi(2) / (2.0 * knee)
+				};
 				db_to_amp(out_db - in_db) * postgain
 			};
 
