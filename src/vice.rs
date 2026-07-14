@@ -127,7 +127,9 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for AudioProcessor<'a>
 				};
 				self.envelope = self.envelope * phase + max_abs * (1.0 - phase);
 				let in_db = amp_to_db(self.envelope);
-				let out_db = if in_db <= low {
+				let out_db = if in_db == f32::NEG_INFINITY {
+					return postgain;
+				} else if in_db <= low {
 					in_db
 				} else if in_db >= high {
 					threshold + (in_db - threshold) / ratio
